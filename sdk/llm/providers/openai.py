@@ -21,17 +21,45 @@ class OpenAIResponse(Enum):
 
 
 class OpenAIProvider(LLMInterface):
-    """
-    OpenAI provider implementation for LLM interactions.
+    """OpenAI GPT model provider implementation.
+
+    Implements the LLMInterface for OpenAI's Chat Completions API, supporting:
+    - GPT-4 and GPT-3.5 models
+    - Function calling / tool use
+    - Conversation history management
+    - Message format conversion between internal and OpenAI formats
+
+    This provider handles:
+    - Authentication via API key
+    - Message format conversion (SystemMessage, UserMessage, etc. -> OpenAI format)
+    - Tool schema conversion to OpenAI function calling format
+    - Response parsing from OpenAI to LLMResponse objects
+
+    Attributes:
+        client: Configured OpenAI client instance
+        model: Model identifier (e.g., 'gpt-4o-mini', 'gpt-4', 'gpt-3.5-turbo')
+
+    Example:
+        provider = OpenAIProvider(
+            api_key="sk-...",
+            model="gpt-4o-mini"
+        )
+
+        messages = [UserMessage(content="Hello")]
+        response = provider.generate_text(messages, tools=None)
+        print(response.text)
     """
 
     def __init__(self, api_key: str, model: str = "gpt-4o-mini"):
-        """
-        Initialize OpenAI provider.
+        """Initialize OpenAI provider with authentication and model selection.
 
         Args:
-            api_key: OpenAI API key
-            model: Model name to use (default: gpt-4o-mini)
+            api_key: OpenAI API key for authentication
+            model: OpenAI model identifier. Defaults to "gpt-4o-mini".
+                  Common options: "gpt-4", "gpt-4o-mini", "gpt-3.5-turbo"
+
+        Raises:
+            OpenAIError: If API key is invalid or authentication fails
         """
         self.client = OpenAI(api_key=api_key)
         self.model = model
@@ -39,15 +67,26 @@ class OpenAIProvider(LLMInterface):
     def generate_text(self,
                       messages: Memory,
                       tools: Optional[List[Any]] = None) -> LLMResponse:
-        """
-        Generate text response from OpenAI.
+        """Generate text response from OpenAI with optional function calling.
+
+        Converts internal message format to OpenAI's Chat Completions format,
+        sends the request with optional tool schemas, and parses the response
+        back into a standardized LLMResponse.
 
         Args:
-            messages: List of Message objects representing conversation history
-            tools: Optional list of tool schemas
+            messages: List of Message objects (UserMessage, AIMessage, SystemMessage,
+                     ToolMessage) representing conversation history
+            tools: Optional list of tool schemas for function calling. Each tool
+                  should have 'name', 'description', and 'parameters' fields.
 
         Returns:
-            LLMResponse with text and/or tool calls
+            LLMResponse containing:
+                - text: The model's text response (if any)
+                - tool_calls: List of ToolCall objects if model requests tool use
+
+        Raises:
+            OpenAIError: If API request fails
+            JSONDecodeError: If tool call arguments are malformed
         """
         # Convert messages to OpenAI format
         openai_messages = self._parse_history(messages)
@@ -66,14 +105,23 @@ class OpenAIProvider(LLMInterface):
         return self._parse_response(response)
 
     def _parse_response(self, response) -> LLMResponse:
-        """
-        Convert OpenAI API response into LLMResponse object.
+        """Convert OpenAI ChatCompletion response to internal LLMResponse format.
+
+        Extracts text content and tool calls from the OpenAI response object
+        and structures them into a standardized LLMResponse that can be used
+        by the agent framework.
 
         Args:
-            response: OpenAI ChatCompletion response
+            response: OpenAI ChatCompletion response object from the API
 
         Returns:
-            LLMResponse object with text and/or tool calls
+            LLMResponse with:
+                - text: String content from the assistant (None if no text)
+                - tool_calls: List of ToolCall objects (None if no tool calls)
+
+        Note:
+            Returns None for tool_calls if the list is empty, rather than an
+            empty list, to simplify downstream conditional logic.
         """
         text_content = None
         tool_calls_list = []
@@ -105,14 +153,26 @@ class OpenAIProvider(LLMInterface):
         )
 
     def _parse_history(self, history: List[Message]) -> List[Dict[str, Any]]:
-        """
-        Convert internal message objects into OpenAI chat format.
+        """Convert internal Message objects to OpenAI Chat Completions format.
+
+        Transforms the SDK's message types (UserMessage, AIMessage, SystemMessage,
+        ToolMessage) into the dictionary format expected by OpenAI's API. Handles
+        both simple text messages and complex tool call messages.
 
         Args:
-            history: List of Message objects
+            history: List of Message objects representing the conversation
 
         Returns:
-            List of dictionaries in OpenAI message format
+            List of dictionaries in OpenAI message format with 'role' and 'content'
+            fields, plus additional fields for tool calls and tool responses
+
+        Raises:
+            ValueError: If an unknown message type is encountered
+
+        Note:
+            - AIMessage content can be either a string or LLMResponse object
+            - Tool calls are serialized to JSON in the OpenAI format
+            - Tool results are formatted with ERROR prefix if unsuccessful
         """
         result = []
 
@@ -186,14 +246,36 @@ class OpenAIProvider(LLMInterface):
         return result
 
     def _parse_tools(self, tools: List[Any]) -> List[Dict[str, Any]]:
-        """
-        Convert tool schemas to OpenAI Chat Completions function calling format.
+        """Convert tool schemas to OpenAI Chat Completions function calling format.
+
+        Transforms tool definitions into the format expected by OpenAI's function
+        calling API. Handles both BaseTool instances (with get_schema method) and
+        pre-formatted schema dictionaries.
 
         Args:
-            tools: List of tool objects or schemas
+            tools: List of tool objects (with get_schema method) or schema dictionaries
+                  containing 'name', 'description', and 'parameters' fields
 
         Returns:
-            List of tool schemas in OpenAI Chat Completions format
+            List of tool schemas in OpenAI Chat Completions format:
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": str,
+                        "description": str,
+                        "parameters": dict  # JSON Schema
+                    }
+                },
+                ...
+            ]
+
+        Raises:
+            ValueError: If tool type is invalid (not a schema dict or tool object)
+
+        Note:
+            Always wraps schemas in the OpenAI format with "type": "function"
+            and nested "function" key, even if input is a raw schema dict.
         """
         openai_tools = []
 
