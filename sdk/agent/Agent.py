@@ -5,6 +5,7 @@ from sdk.models.models import LLMEnums, LLMResponse, ToolResult, ToolCall
 from sdk.llm import Factory
 from sdk.agent.base_agent import BaseAgent
 from typing import List, Dict, Any, Optional
+import logging
 
 class Agent(BaseAgent):
     """Primary agent implementation with LLM integration and tool execution.
@@ -66,9 +67,15 @@ class Agent(BaseAgent):
         self.llm = llm
         self.tools_schema = [tool.get_schema() for tool in tools]
 
+        # Set up logger
+        self.logger = logging.getLogger(f"{__name__}.{self.name or 'Agent'}")
+
         # LLm validation
         if self.llm is None:
+            self.logger.info("No LLM provided, creating default LLM via Factory")
             self.llm = Factory().create()
+
+        self.logger.info(f"Agent initialized with {len(self.tools)} tools: {list(self.tools.keys())}")
 
         # TODO: Handling: system message, history -> Validation
 
@@ -81,9 +88,19 @@ class Agent(BaseAgent):
         Returns:
             LLMResponse: Contains text content and/or tool calls from the LLM
         """
+        self.logger.debug("Starting LLM thinking phase")
         messages = self.history.get_messages()
         tool_schema = self.tools_schema if self.tools_schema else {}
+
+        self.logger.debug(f"Calling LLM with {len(messages)} messages and {len(tool_schema)} available tools")
         response = self.llm.generate_text(messages=messages, tools=tool_schema)
+
+        if response.has_tool_call():
+            tool_calls = response.tool_calls if isinstance(response.tool_calls, list) else [response.tool_calls]
+            self.logger.info(f"LLM requested {len(tool_calls)} tool call(s): {[tc.name for tc in tool_calls]}")
+        if response.text:
+            self.logger.debug(f"LLM generated text response: {response.text[:100]}..." if len(response.text) > 100 else f"LLM generated text response: {response.text}")
+
         return response
 
 
@@ -103,11 +120,15 @@ class Agent(BaseAgent):
             List of ToolResult objects, one for each tool call, containing
             success status and either result data or error messages
         """
+        self.logger.info(f"Executing {len(tool_calls)} tool call(s)")
         results = []
 
-        for tc in tool_calls:
+        for idx, tc in enumerate(tool_calls, 1):
+            self.logger.debug(f"Tool call {idx}/{len(tool_calls)}: {tc.name} with args {tc.arguments}")
+
             # Validate tool exists
             if not self._validate_tool_calls(tc.name):
+                self.logger.warning(f"Tool '{tc.name}' not found in available tools: {list(self.tools.keys())}")
                 results.append(ToolResult(
                     success=False,
                     error=f"Tool name of the '{tc.name}' is not available in the agent's tool list."
@@ -119,10 +140,20 @@ class Agent(BaseAgent):
                 tool = self.tools[tc.name]
                 # Validate arguments
                 validated_args = tool.validate_args(tc.arguments)
+                self.logger.debug(f"Arguments validated for tool '{tc.name}'")
+
                 # Execute the tool
                 result = tool.run(**validated_args.model_dump())
+
+                if result.success:
+                    self.logger.info(f"Tool '{tc.name}' executed successfully")
+                    self.logger.debug(f"Tool result: {result.result[:200]}..." if result.result and len(result.result) > 200 else f"Tool result: {result.result}")
+                else:
+                    self.logger.warning(f"Tool '{tc.name}' execution failed: {result.error}")
+
                 results.append(result)
             except Exception as e:
+                self.logger.error(f"Exception while executing tool '{tc.name}': {str(e)}", exc_info=True)
                 results.append(ToolResult(
                     success=False,
                     error=f"Error executing tool '{tc.name}': {str(e)}"
@@ -170,9 +201,16 @@ class Agent(BaseAgent):
             # Agent will call read_file tool and respond with contents
         """
         if user_input:
+            self.logger.info(f"Agent run started with user input: {user_input[:100]}..." if len(user_input) > 100 else f"Agent run started with user input: {user_input}")
             self.history.add_user_message(user_input)
+        else:
+            self.logger.info("Agent run started with no user input (continuing from previous state)")
 
+        iteration = 0
         while True:
+            iteration += 1
+            self.logger.debug(f"Agent iteration {iteration} starting")
+
             response = self._think()
 
             # Update memory with assistant message
@@ -181,6 +219,8 @@ class Agent(BaseAgent):
             # Decide next action
             if response.is_text_only():
                 # Exit Condition: when LLM returns text only
+                self.logger.info(f"Agent completed after {iteration} iteration(s) with text-only response")
+                self.logger.debug(f"Final response: {response.text[:200]}..." if len(response.text) > 200 else f"Final response: {response.text}")
                 return response.text
 
             elif response.has_tool_call():
@@ -194,3 +234,5 @@ class Agent(BaseAgent):
                 for i, (tc, result) in enumerate(zip(tool_calls, results)):
                     tool_call_id = tc.tool_call_id if tc.tool_call_id else tc.name
                     self.history.add_tool_message(result, tool_call_id=tool_call_id)
+
+                self.logger.debug(f"Tool results added to memory, continuing to next iteration")

@@ -59,7 +59,7 @@ class Memory():
         """
         self.messages.append(UserMessage(content= content))
 
-    def add_assistant_message(self, content: str):
+    def add_assistant_message(self, content: LLMResponse):
         """Add an AI assistant message to the conversation history.
 
         Stores the AI's response, which can be plain text or include tool calls.

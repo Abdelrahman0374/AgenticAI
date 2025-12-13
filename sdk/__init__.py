@@ -19,7 +19,7 @@ Typical usage:
 
 from sdk.agent import Agent
 from sdk.memory import Memory
-from sdk.tools import ReadFileTool, WriteFileTool, AgentTool
+from sdk.tools import ReadFileTool, WriteFileTool, AgentTool, AskUserTool
 from sdk.llm import Factory
 from sdk.models import LLMResponse, ToolResult, ToolCall, Message, UserMessage, AIMessage, ToolMessage, SystemMessage
 
@@ -30,6 +30,7 @@ __all__ = [
     "ReadFileTool",
     "WriteFileTool",
     "AgentTool",
+    "AskUserTool",
     "Factory",
     "LLMResponse",
     "ToolResult",
